@@ -52,14 +52,14 @@ Add to your `openclaw.json` MCP config:
     "everything-search": {
       "command": "python",
       "args": [
-        "C:/Users/Amzor/.openclaw/workspace/everything_mcp_server/everything_mcp_server.py"
+        "path/to/everything_mcp_server.py"
       ]
     }
   }
 }
 ```
 
-**Note:** `command` and `args` are separate fields. Don't put everything in one string.
+**Note:** `command` and `args` are separate fields. Replace `path/to/` with the actual path on your machine.
 
 ## Why this exists
 
