@@ -44,18 +44,22 @@ pip install -r requirements.txt
 
 ## Configure in OpenClaw
 
-Add to your MCP config:
+Add to your `openclaw.json` MCP config:
 
 ```json
-{
-  "mcpServers": {
+"mcp": {
+  "servers": {
     "everything-search": {
       "command": "python",
-      "args": ["path/to/everything_mcp_server.py"]
+      "args": [
+        "C:/Users/Amzor/.openclaw/workspace/everything_mcp_server/everything_mcp_server.py"
+      ]
     }
   }
 }
 ```
+
+**Note:** `command` and `args` are separate fields. Don't put everything in one string.
 
 ## Why this exists
 
