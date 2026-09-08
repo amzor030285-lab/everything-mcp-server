@@ -8,26 +8,40 @@ Exposes Everything's instant file search as MCP tools, so AI agents can find fil
 
 ## Tools
 
-### `search_files(query, max_results=50)`
+### `search_files(query, max_results=50, offset=0)`
 
 Search for files and folders using Everything's indexed search.
 
 ```
 query: filename or pattern (e.g. "report", "ext:py", "project AND config")
-max_results: 1-100 (default 50)
+max_results: results per page, 1-100 (default 50)
+offset: skip this many results to paginate further (default 0)
 ```
 
-Returns: file name, full path, and human-readable size.
+Returns: file name, full path, human-readable size, modification date,
+and a `[showing N of M total]` header. If there are more matches, the output
+includes the next `offset` value for pagination.
 
 ### `get_search_tips()`
 
-Returns advanced search syntax reference (extensions, dates, size filters, boolean operators, regex).
+Returns advanced search syntax reference (extensions, dates, size filters,
+folder scoping via `parent:`, boolean operators, regex).
+
+## Configuration
+
+Optional environment variables:
+
+| Variable             | Default                    | Description                     |
+|----------------------|----------------------------|---------------------------------|
+| `EVERYTHING_URL`     | `http://127.0.0.1:8888/`   | Everything HTTP server endpoint |
+| `EVERYTHING_TIMEOUT` | `5`                        | Request timeout in seconds      |
 
 ## Security
 
-- Input validation on query length (max 100 chars) and result count (max 100)
-- Blocks overly broad patterns (e.g. `*` alone)
-- 5-second timeout on HTTP requests
+- Input validation on query length (max 100 chars) and result count/offset
+- Blocks overly broad patterns (`*` alone, single-character queries) — queries need at least ~2 significant characters
+- Requests are capped at 100 rows per page; use `offset` instead of huge dumps
+- 5-second timeout on HTTP requests (configurable)
 - Graceful error handling with actionable hints
 
 ## Requirements
@@ -35,6 +49,10 @@ Returns advanced search syntax reference (extensions, dates, size filters, boole
 - Windows with [Everything](https://www.voidtools.com/) installed
 - Everything HTTP Server enabled (Tools → Options → HTTP Server, port 8888)
 - Python 3.10+
+
+> **SDK version note (2026-09-09):** requires `mcp` SDK **2.x** (`mcp.server.mcpserver.MCPServer`).
+> If you installed an older copy of this server, run `pip install -U mcp` to get 2.x.
+> Details of the v1→v2 migration: see `DEVLOG.md`.
 
 ## Install
 

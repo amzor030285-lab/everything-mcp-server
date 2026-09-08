@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .ruff_cache/
 nul
+*.bak
 *.egg-info/
 dist/
 build/
