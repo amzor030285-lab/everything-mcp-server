@@ -22,6 +22,23 @@ Returns: file name, full path, human-readable size, modification date,
 and a `[showing N of M total]` header. If there are more matches, the output
 includes the next `offset` value for pagination.
 
+### `folder_sizes(path, max_results=20, max_pages_per_folder=1)`
+
+Rank direct subfolders of a folder by total size, computed from the Everything
+index (in-memory; no filesystem traversal, no disk load). Use this instead of
+`search_files` when the question is "which folders are big", not "where is this file".
+
+```
+path: root folder to analyze (e.g. "C:\\Users\\Amzor")
+max_results: largest subfolders to report, 1-50 (default 20)
+max_pages_per_folder: 1000-file pages per size category (default 1 = 3 per folder); 0 = list only
+```
+
+Returns subfolders sorted by total size of their files >=1MB (the `size:` filter
+matches files only, so folder-heavy prefixes cannot dilute the sample). Sizes
+are lower bounds (`>=`) when the page budget cuts counting short; files under
+1MB are excluded by design.
+
 ### `get_search_tips()`
 
 Returns advanced search syntax reference (extensions, dates, size filters,
