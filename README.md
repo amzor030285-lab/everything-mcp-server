@@ -103,3 +103,7 @@ Add to your `openclaw.json` MCP config:
 Everything Search indexes NTFS volumes in milliseconds, but has no native MCP integration. This server bridges that gap — agents get instant file search without shell access or slow `Get-ChildItem` traversal.
 
 Built because no equivalent MCP server existed.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
