@@ -22,7 +22,7 @@ Returns: file name, full path, human-readable size, modification date,
 and a `[showing N of M total]` header. If there are more matches, the output
 includes the next `offset` value for pagination.
 
-### `folder_sizes(path, max_results=20, max_pages_per_folder=1)`
+### `folder_sizes(path, max_results=20, exact=True)`
 
 Rank direct subfolders of a folder by total size, computed from the Everything
 index (in-memory; no filesystem traversal, no disk load). Use this instead of
@@ -31,13 +31,15 @@ index (in-memory; no filesystem traversal, no disk load). Use this instead of
 ```
 path: root folder to analyze (e.g. "C:\\Users\\User")
 max_results: largest subfolders to report, 1-50 (default 20)
-max_pages_per_folder: 1000-file pages per size category (default 1 = 3 per folder); 0 = list only
+exact: true (default) = every indexed file; false = only files >=1MB, one page per size category
 ```
 
-Returns subfolders sorted by total size of their files >=1MB (the `size:` filter
-matches files only, so folder-heavy prefixes cannot dilute the sample). Sizes
-are lower bounds (`>=`) when the page budget cuts counting short; files under
-1MB are excluded by design.
+`exact=true` is accurate: about 3-5 s for a normal folder, ~13 s and a few
+hundred MB of localhost traffic for a whole drive. `exact=false` reads much
+less but counts only files >=1MB from one page per size category, so sizes are
+lower bounds (`>=`). Sizes are logical file sizes from the index, not physical
+disk usage. The first output line names the mode, so the numbers always come
+with their caveat attached.
 
 ### `get_search_tips()`
 

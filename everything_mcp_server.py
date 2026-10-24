@@ -195,11 +195,19 @@ def _empty_result_hint(query: str) -> str:
 #
 # Everything's 'sizebyfolder' keyword is GUI-only: the HTTP API returns 0
 # results for it (verified 2026-10-10). So folder totals are computed here:
-# 'parent:' lists direct children (1 request), then per child we sum file
-# sizes via paged size:large / size:huge / size:gigantic queries (files
-# >=1MB only — the size: filter matches files only, so folder-heavy
-# prefixes cannot dilute the sample). All queries hit the in-memory index
-# (no disk load).
+# 'parent:' lists direct children (1 request), then per child we page
+# through its path prefix and sum file sizes from the in-memory index
+# (no disk load). Exact mode reads every indexed file; fast mode reads one
+# page per size: category (files >=1MB only) and reports lower bounds.
+#
+# Page size trade-off (measured 2026-10-25): 100k rows ~= 1M rows/s and
+# ~100 MB/s of localhost JSON; 10k rows is ~30% slower and uses ~10x more
+# requests. Everything reports totalResults, so a page is never assumed
+# complete just because it looks short.
+
+PAGE_SIZE = 50_000
+PAGE_BUDGET = 400  # hard cap on HTTP pages per call: bounds worst-case latency
+SIZE_CATEGORIES = ("size:large", "size:huge", "size:gigantic")  # covers all files >=1MB
 
 
 def _size_bytes(value) -> int:
@@ -241,8 +249,60 @@ def _http_get(params: dict) -> dict | list:
     return response.json()
 
 
+def _scan(search: str, budget: list[int], max_pages: int | None = None) -> tuple[int, int, int, bool]:
+    """Page through one Everything query and sum file sizes.
+
+    Returns (bytes, files_counted, items_total, complete). items_total is the
+    server's totalResults (files and folders alike), or the rows seen when the
+    server does not report it. complete is False when the page budget ran out
+    or a page failed -- callers must then print a lower bound.
+    """
+    size_sum = files = offset = pages = 0
+    items_total = None
+    complete = True
+    while True:
+        if budget[0] <= 0:
+            complete = False
+            break
+        try:
+            data = _http_get({
+                "search": search,
+                "json": "1",
+                "count": str(PAGE_SIZE),
+                "offset": str(offset),
+                "size_column": "1",
+                "type_column": "1",
+            })
+        except (requests.exceptions.RequestException, ValueError):
+            complete = False
+            break
+        budget[0] -= 1
+        pages += 1
+        if items_total is None:
+            items_total = _get_total_results(data)
+        rows = data.get("results", []) if isinstance(data, dict) else []
+        for it in rows:
+            if isinstance(it, dict) and it.get("type") != "folder":
+                files += 1
+                size_sum += _size_bytes(it.get("size"))
+        offset += len(rows)
+        done = (
+            not rows
+            or (items_total is not None and offset >= items_total)
+            or (items_total is None and len(rows) < PAGE_SIZE)
+        )
+        if done:
+            break
+        if max_pages is not None and pages >= max_pages:
+            complete = False
+            break
+    if items_total is None:
+        items_total = offset
+    return size_sum, files, items_total, complete
+
+
 @mcp.tool()
-def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1) -> str:
+def folder_sizes(path: str, max_results: int = 20, exact: bool = True) -> str:
     """
     Rank the direct subfolders of a folder by total size, using the
     Everything index (in-memory; no filesystem traversal, no disk load).
@@ -254,14 +314,14 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
     Args:
         path: Root folder to analyze (e.g. 'C:\\Users\\User').
         max_results: How many largest subfolders to report (default 20, cap 50).
-        max_pages_per_folder: Pages of 1000 files counted per size category
-            (large/huge/gigantic; default 1 = 3 pages per folder).
-            0 = list children only, no size counting.
+        exact: True (default) sums every indexed file under each subfolder.
+            Accurate, but a whole drive costs ~10 s and a few hundred MB of
+            local HTTP traffic. False sums only files >=1MB from one page per
+            size category: much less traffic, but numbers are lower bounds.
 
-    Returns subfolders sorted by total size of their files >=1MB (the size:
-    filter matches files only, so folders cannot dilute the sample). Totals
-    are lower bounds ('>=') when the page budget cuts counting short; files
-    under 1MB are excluded by design (they do not drive bloat-scale totals).
+    Returns subfolders sorted by size. Sizes are logical file sizes from the
+    Everything index, not physical disk usage. The first line names the mode;
+    '>=' marks a lower bound when the page budget cut counting short.
     """
     root = _normalize_folder_path(path)
     if not (root.startswith("\\\\") or re.match(r"^[A-Za-z]:(($|\\))", root)):
@@ -271,13 +331,10 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
     if max_results < 1:
         return "Error: max_results must be at least 1."
     max_results = min(max_results, 50)
-    if max_pages_per_folder < 0:
-        return "Error: max_pages_per_folder must be >= 0."
 
     try:
-        parent_search = f"parent:{_quoted_path_prefix(root)}"
         data = _http_get({
-            "search": parent_search,
+            "search": f"parent:{_quoted_path_prefix(root)}",
             "json": "1",
             "count": "1000",
             "path_column": "1",
@@ -298,89 +355,54 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
     if not children:
         return f"No direct subfolders found for {root} in the Everything index."
 
-    # size: categories (files only — folders have no size): large=1-16MB,
-    # huge=16MB-1GB, gigantic=1GB+. Together they cover all files >=1MB.
-    SIZE_CATEGORIES = ("size:large", "size:huge", "size:gigantic")
-
-    PAGE = 1000
-    budget = 400  # hard cap on HTTP pages per call: bounds worst-case latency
-    # rows: (path, bytes, files_counted, files_total, total_known, state)
-    # state: ok|skipped
+    budget = [PAGE_BUDGET]
+    # rows: (path, bytes, files_counted, files_total, complete)
     rows = []
     for child in children:
         cpath = f"{root}\\{child.get('name', '?')}"
-        bytes_sum = 0
-        files_counted = 0
-        files_total = 0
-        total_known = True
-        state = "ok"
-        if max_pages_per_folder > 0:
-            for cat in SIZE_CATEGORIES:
-                offset = 0
-                pages = 0
-                while pages < max_pages_per_folder:
-                    if budget <= 0:
-                        state = "skipped"
-                        break
-                    try:
-                        data_c = _http_get({
-                            "search": f"{_quoted_path_prefix(cpath)} {cat}",
-                            "json": "1",
-                            "count": str(PAGE),
-                            "offset": str(offset),
-                            "size_column": "1",
-                            "type_column": "1",
-                        })
-                    except (requests.exceptions.RequestException, ValueError):
-                        state = "skipped"
-                        break
-                    budget -= 1
-                    pages += 1
-                    items_c = data_c.get("results", []) if isinstance(data_c, dict) else []
-                    cat_total = _get_total_results(data_c)
-                    if cat_total is None:
-                        total_known = False
-                    else:
-                        files_total += cat_total
-                    if not items_c:
-                        break
-                    for it in items_c:
-                        if isinstance(it, dict) and it.get("type") != "folder":
-                            files_counted += 1
-                            bytes_sum += _size_bytes(it.get("size"))
-                    if len(items_c) < PAGE:
-                        break
-                    offset += len(items_c)
-                if state == "skipped":
-                    break
-        rows.append((cpath, bytes_sum, files_counted, files_total, total_known, state))
+        prefix = _quoted_path_prefix(cpath)
+        if exact:
+            size_sum, files, items_total, complete = _scan(prefix, budget)
+            rows.append((cpath, size_sum, files, items_total, complete))
+            continue
+        size_sum = files = files_total = 0
+        complete = True
+        for cat in SIZE_CATEGORIES:
+            cat_bytes, cat_files, cat_total, cat_complete = _scan(
+                f"{prefix} {cat}", budget, max_pages=1
+            )
+            size_sum += cat_bytes
+            files += cat_files
+            files_total += cat_total
+            complete = complete and cat_complete
+        rows.append((cpath, size_sum, files, files_total, complete))
 
     rows.sort(key=lambda r: r[1], reverse=True)
     top = rows[:max_results]
-    lines = [f"[folder sizes for {root} — {len(rows)} direct subfolders, Everything index]"]
-    for i, (cpath, b, f_c, f_t, total_known, state) in enumerate(top, 1):
-        if state == "skipped":
+    if exact:
+        lines = [f"[exact: all indexed files, logical sizes | {root} | {len(rows)} direct subfolders]"]
+    else:
+        lines = [f"[fast: only files >=1MB, lower bounds | {root} | {len(rows)} direct subfolders]"]
+    for i, (cpath, size_sum, files, items_total, complete) in enumerate(top, 1):
+        if not complete and not files:
             lines.append(f"{i:>2}. {cpath}  not counted (page budget exhausted)")
             continue
-        if max_pages_per_folder == 0:
-            size_s = "-"
-            note = "-"
+        size_s = _format_size(size_sum) if complete else f">= {_format_size(size_sum)}"
+        if exact:
+            note = f"{files:,} files" if complete else f"partial: {files:,} files, cut short"
+        elif not files and not items_total:
+            note = "no files >=1MB"
+        elif complete:
+            note = f"{files:,} files >=1MB"
         else:
-            complete = total_known and f_c >= f_t
-            size_s = _format_size(b) if complete else f">= {_format_size(b)}"
-            if not total_known:
-                note = f"counted {f_c:,} files >=1MB"
-            elif f_t:
-                if complete:
-                    note = f"{f_t:,} files >=1MB"
-                else:
-                    note = f"counted {f_c:,} of {f_t:,} files >=1MB"
-            else:
-                note = "no files >=1MB"
+            note = f"counted {files:,} of {items_total:,} files >=1MB"
         lines.append(f"{i:>2}. {cpath}  {size_s}  [{note}]")
     if len(rows) > max_results:
         lines.append(f"... {len(rows) - max_results} smaller subfolders not shown (max_results={max_results})")
-    lines.append("NOTE: '>=' = lower bound; totals cover files >=1MB only (smaller files excluded).")
+    if exact:
+        lines.append("NOTE: exact = every file in the Everything index; sizes are logical (MFT), not on-disk usage.")
+    else:
+        lines.append("NOTE: fast = files under 1MB are not counted; numbers are lower bounds ('>=' when cut short).")
     return "\n".join(lines)
 
 
