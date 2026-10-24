@@ -210,7 +210,7 @@ def _size_bytes(value) -> int:
         n = int(value)
     except (ValueError, TypeError):
         return 0
-    return n if n >= 0 else 0
+    return max(n, 0)
 
 
 def _normalize_folder_path(path: str) -> str:
@@ -220,6 +220,17 @@ def _normalize_folder_path(path: str) -> str:
     while len(p) > 2 and p.endswith("\\"):
         p = p[:-1]
     return p
+
+
+def _quoted_path_prefix(path: str) -> str:
+    """Everything query term for a path: quoted, with a trailing backslash.
+
+    Quotes keep spaces inside a single term ('C:\\Program Files' otherwise
+    splits into two AND-ed terms). The trailing backslash stops a folder from
+    absorbing sibling prefixes ('C:\\Program Files' would also match
+    'C:\\Program Files (x86)').
+    """
+    return '"' + path.rstrip("\\") + '\\"'
 
 
 def _http_get(params: dict) -> dict | list:
@@ -237,11 +248,11 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
     Everything index (in-memory; no filesystem traversal, no disk load).
 
     Use this (not search_files) to answer "which folders have grown large"
-    under a root like 'C:\\Users\\Amzor' or 'C:\\ProgramData'.
+    under a root like 'C:\\Users\\User' or 'C:\\ProgramData'.
     Takes a full folder path; search_files takes filenames/patterns.
 
     Args:
-        path: Root folder to analyze (e.g. 'C:\\Users\\Amzor').
+        path: Root folder to analyze (e.g. 'C:\\Users\\User').
         max_results: How many largest subfolders to report (default 20, cap 50).
         max_pages_per_folder: Pages of 1000 files counted per size category
             (large/huge/gigantic; default 1 = 3 pages per folder).
@@ -253,8 +264,8 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
     under 1MB are excluded by design (they do not drive bloat-scale totals).
     """
     root = _normalize_folder_path(path)
-    if not (root.startswith("\\") or re.match(r"^[A-Za-z]:(($|\\))", root)):
-        return "Error: path must be a folder like 'C:\\Users\\Amzor' (drive letter + backslash)."
+    if not (root.startswith("\\\\") or re.match(r"^[A-Za-z]:(($|\\))", root)):
+        return "Error: path must be a folder like 'C:\\Users\\User' (drive letter + backslash)."
     if len(root) > 260:
         return "Error: path is too long (max 260 chars)."
     if max_results < 1:
@@ -264,8 +275,7 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
         return "Error: max_pages_per_folder must be >= 0."
 
     try:
-        is_drive_root = len(root) == 2 and root[0].isalpha() and root[1] == ":"
-        parent_search = f"parent:{root}\\" if is_drive_root else f"parent:{root}"
+        parent_search = f"parent:{_quoted_path_prefix(root)}"
         data = _http_get({
             "search": parent_search,
             "json": "1",
@@ -314,7 +324,7 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
                         break
                     try:
                         data_c = _http_get({
-                            "search": f"{cpath} {cat}",
+                            "search": f"{_quoted_path_prefix(cpath)} {cat}",
                             "json": "1",
                             "count": str(PAGE),
                             "offset": str(offset),
@@ -370,7 +380,7 @@ def folder_sizes(path: str, max_results: int = 20, max_pages_per_folder: int = 1
         lines.append(f"{i:>2}. {cpath}  {size_s}  [{note}]")
     if len(rows) > max_results:
         lines.append(f"... {len(rows) - max_results} smaller subfolders not shown (max_results={max_results})")
-    lines.append("NOTE: '>=' = lower bound; totals cover files >=1MB only (smaller files excluded); folders match by full-path prefix (sibling prefixes may merge).")
+    lines.append("NOTE: '>=' = lower bound; totals cover files >=1MB only (smaller files excluded).")
     return "\n".join(lines)
 
 

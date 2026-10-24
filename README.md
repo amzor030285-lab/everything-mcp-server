@@ -29,7 +29,7 @@ index (in-memory; no filesystem traversal, no disk load). Use this instead of
 `search_files` when the question is "which folders are big", not "where is this file".
 
 ```
-path: root folder to analyze (e.g. "C:\\Users\\Amzor")
+path: root folder to analyze (e.g. "C:\\Users\\User")
 max_results: largest subfolders to report, 1-50 (default 20)
 max_pages_per_folder: 1000-file pages per size category (default 1 = 3 per folder); 0 = list only
 ```
